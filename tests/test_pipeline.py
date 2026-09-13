@@ -1,13 +1,11 @@
 from pathlib import Path
-import sys
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
+from kyc_graphrag.corpus import load_documents
 from kyc_graphrag.eval import load_gold, score_case
 from kyc_graphrag.extract import extract_triples
-from kyc_graphrag.corpus import load_documents
 from kyc_graphrag.pipeline import build_pipeline
+
+ROOT = Path(__file__).resolve().parents[1]
 
 POLICIES = ROOT / "data" / "policies"
 GOLD = ROOT / "data" / "gold.json"

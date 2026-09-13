@@ -6,4 +6,7 @@ __pycache__/
 dist/
 *.egg-info/
 artifacts/*.json
+artifacts/*.db
+artifacts/*.db-shm
+artifacts/*.db-wal
 !artifacts/.gitkeep

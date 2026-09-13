@@ -1,21 +1,23 @@
 # KYC Policy Graph RAG
 
-Graph RAG over Indian retail-banking **KYC / address-change / AML** policy. Built to answer *who may write, who must escalate, which control hops from another circular* — not “stuff a PDF into a vector DB.”
+Production-shaped Graph RAG over Indian retail-banking **KYC / address-change / AML** policy. Built to answer *who may write, who must escalate, which control hops from another circular* — not “stuff a PDF into a vector DB.”
 
 Inspired by [microsoft/graphrag](https://github.com/microsoft/graphrag) (local + global search) and the LlamaIndex GraphRAG cookbook. **Not a fork.** Extraction, store, retrieval, and eval are original.
 
 ## What “good” means here vs the first demo
 
-| First version | This version |
+| Capability | Implementation |
 | --- | --- |
-| One regex per gold fact | Gazetteer mentions + **schema-level** relation cues (works on paraphrases) |
-| Four clean markdown files | + Q3 circular, PEP SOP, OCR-noisy scan |
-| Gold questions copied from the regex | Held-out questions that **do not name** the hop entity |
-| Triple-string HIT/MISS | Keyword + **must-cite document** scoring |
-| Ego-graph dump | Dense/TF-IDF chunks + typed edges + Louvain communities, fused with **RRF** |
-| No citations | Cited extractive answers; optional OpenAI rewrite if `OPENAI_API_KEY` is set |
+| Ingestion | Recursive Markdown, text, and **PDF** loading with stable document provenance |
+| Extraction | Offline schema cues on paraphrases, or `KYC_EXTRACTION=openai` for constrained **JSON-Schema** model extraction |
+| Graph | Typed NetworkX multigraph, Louvain communities, evidence on every edge |
+| Retrieval | MiniLM/TF-IDF chunks + typed edges + community summaries, fused with **RRF** and 2-hop expansion |
+| Persistence | Normalized **SQLite** snapshot (documents, chunks, nodes, edges, communities) plus FTS5 |
+| Serving | Typed FastAPI `/query`, `/health`, and `/graph/neighbors/{entity}` endpoints |
+| Evaluation | Held-out paraphrases, answer-key + must-cite scoring, MRR, recall@8, and latency |
+| Delivery | Installable package, CLI, Docker image, non-root runtime, healthcheck, and a GitHub Actions template |
 
-Still not Microsoft GraphRAG: no Leiden+LLM community summaries, no Neo4j, no GLiNER. It is a **domain Graph RAG you can run offline and defend in an interview**.
+This is still intentionally smaller than Microsoft GraphRAG: it does not claim open-domain extraction or production scale. The included corpus is synthetic and the six-question benchmark is a regression suite, not statistical evidence of superiority.
 
 ## Flagship hop
 
@@ -23,12 +25,19 @@ Still not Microsoft GraphRAG: no Leiden+LLM community summaries, no Neo4j, no GL
 
 The question never says IASW or CBS. Chunk RAG typically returns “Maker cannot post.” The graph has to use `IASW Agent -ACTS_AS-> Maker` then `CANNOT_WRITE -> CBS`, including from the paraphrased Q3 circular (“field-extraction bot … classified as Maker … prohibited from updating core banking”).
 
-Held-out (`scripts/run_demo.py --sparse`): **naive 5/6, graph 6/6**. The miss for chunk RAG is that hop.
+Held-out (`scripts/run_demo.py --sparse`):
+
+- task success: naive **5/6**, graph **6/6**
+- MRR: naive **0.833**, graph **0.889**
+- graph recall@8: **1.000**
+- mean retrieval latency on the included corpus: **0.13 ms** (hardware-dependent)
+
+The miss for chunk RAG is the unnamed-entity hop. These six questions are a transparent regression set, not a statistically powered benchmark.
 
 ## Pipeline
 
 ```
-policies (md/txt)
+policies (PDF/Markdown/text)
   -> sentence windows (coref-light: adjacent sentences)
   -> mentions (aliases) + relation cues
   -> NetworkX property graph
@@ -45,19 +54,42 @@ MiniLM (`all-MiniLM-L6-v2`) is used when `sentence-transformers` loads; otherwis
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev,dense]"
 PYTHONPATH=src python scripts/run_demo.py --sparse   # no model download
 PYTHONPATH=src python scripts/run_demo.py            # MiniLM if installed
 PYTHONPATH=src python -m pytest -q
 ```
+
+### Serve it
+
+```bash
+KYC_SPARSE=1 uvicorn kyc_graphrag.api:app --reload
+curl -s http://localhost:8000/health
+curl -s -X POST http://localhost:8000/query \
+  -H 'content-type: application/json' \
+  -d '{"question":"Who may post an address change to CBS?","top_k":8}'
+```
+
+Or:
+
+```bash
+docker build -t kyc-graphrag .
+docker run --rm -p 8000:8000 kyc-graphrag
+```
+
+`ci/github-actions.yml` is the tested workflow template. Copy it to
+`.github/workflows/ci.yml` after authorizing your GitHub token with `workflow`
+scope; the current publishing token cannot create workflow files.
+
+For model extraction, set `KYC_EXTRACTION=openai` and `OPENAI_API_KEY`. Model output is constrained to the declared entities and relations and validated again before entering the graph.
 
 ## Interview talking points
 
 - Why Graph RAG: maker-checker constraints are **edges**, not chunks.
 - Why schema extraction: new circulars should extract without a new fact regex (see `tests/test_pipeline.py`).
 - Why eval is not circular: hop question omits the entity the graph must recover.
-- Honest limit: gazetteer + cues, not open-domain LLM extraction. Next step would be GLiNER/LLM fill on the same schema.
+- Honest limit: included results use seven synthetic documents and six regression questions. Bring a public or redacted policy set before making real-world quality claims.
 
 ## Resume line
 
-Graph RAG over KYC/AML policy: schema-guided graph, RRF hybrid retrieval (chunks + 2-hop edges + communities). Held-out hop question that never names IASW: chunk RAG misses, graph recovers Maker-classed software cannot write CBS (5/6 vs 6/6).
+Built a production-shaped Graph RAG for KYC/AML policy with PDF ingestion, validated schema/model extraction, RRF hybrid retrieval across chunks/2-hop edges/Louvain communities, SQLite provenance, FastAPI, Docker, CI, and citation-aware evaluation.

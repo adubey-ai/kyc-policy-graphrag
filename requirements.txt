@@ -1,4 +1,8 @@
 networkx>=3.2
 numpy>=1.26
+fastapi>=0.115
+pydantic>=2.8
+pypdf>=5.0
 pytest>=8.0
 sentence-transformers>=3.0
+uvicorn[standard]>=0.30
