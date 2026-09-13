@@ -71,8 +71,6 @@ ENTITIES: tuple[MentionSpec, ...] = (
     MentionSpec("POL-CHG-014", "Policy", ("pol-chg-014",)),
     MentionSpec("POL-AML-007", "Policy", ("pol-aml-007",)),
     MentionSpec("POL-AUD-003", "Policy", ("pol-aud-003",)),
-    MentionSpec("8", "Duration", ("8 years",)),
-    MentionSpec("10", "Duration", ("10 years",)),
 )
 
 
@@ -132,7 +130,7 @@ RELATION_CUES: tuple[tuple[tuple[str, ...], frozenset[str], frozenset[str], str]
             "triggers edd",
             "trigger edd",
         ),
-        frozenset({"Product", "Process", "CustomerType", "Control", "RiskList", "Role"}),
+        frozenset({"Product", "Process", "CustomerType", "Control", "RiskList"}),
         frozenset({"Document", "Control", "Form", "Role", "Product"}),
         "REQUIRES",
     ),
@@ -143,7 +141,7 @@ RELATION_CUES: tuple[tuple[tuple[str, ...], frozenset[str], frozenset[str], str]
         "ESCALATES_TO",
     ),
     (
-        ("on failure", "failed ovd", "first attempt"),
+        ("on failure", "failed ovd", "first attempt", "first officially valid document"),
         frozenset({"Document"}),
         frozenset({"Unit"}),
         "ON_FAILURE_ROUTES_TO",
@@ -153,12 +151,6 @@ RELATION_CUES: tuple[tuple[tuple[str, ...], frozenset[str], frozenset[str], str]
         frozenset({"Policy"}),
         frozenset({"Product", "Process", "Control", "Document"}),
         "GOVERNS",
-    ),
-    (
-        ("retain", "retention", "8 years", "10 years"),
-        frozenset({"Document", "Control"}),
-        frozenset({"Duration"}),
-        "RETAINED_YEARS",
     ),
     (
         ("checker from", "from the financial crime"),

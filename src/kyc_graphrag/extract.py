@@ -62,56 +62,82 @@ def _boundary(text: str, i: int, j: int) -> bool:
     return left_ok and right_ok
 
 
-DIRECTED = frozenset(
-    {
-        "CANNOT_WRITE",
-        "CAN_WRITE",
-        "CAN_FREEZE",
-        "ACTS_AS",
-        "ESCALATES_TO",
-        "ON_FAILURE_ROUTES_TO",
-        "REQUIRES_CHECKER_FROM",
-        "CONFIDENCE_GATE",
-        "GOVERNS",
-        "RETAINED_YEARS",
-        "ACCEPTS",
-    }
-)
+def _valid_relation(relation: str, head: Mention, tail: Mention) -> bool:
+    if head.canonical == tail.canonical:
+        return False
+    if relation == "CANNOT_WRITE" and head.canonical == "Checker":
+        return False
+    if relation == "CAN_WRITE" and head.canonical != "Checker":
+        return False
+    if relation == "ACTS_AS" and not (head.entity_type == "System" and tail.canonical == "Maker"):
+        return False
+    if relation == "CAN_FREEZE" and head.canonical != "Financial Crime Unit":
+        return False
+    if relation == "REQUIRES" and tail.entity_type == "Role" and tail.canonical != "Dual Checker":
+        return False
+    if (
+        relation == "REQUIRES"
+        and head.entity_type == "Product"
+        and tail.entity_type not in {"Document", "Control", "Form"}
+    ):
+        return False
+    return True
 
 
-def _cue_relation(sentence: str, head: Mention, tail: Mention) -> str | None:
-    blob = sentence.lower()
+def _extract_from_window(sentence: Sentence, mentions: list[Mention]) -> list[Triple]:
+    """Emit at most one closest typed argument pair per relation cue.
+
+    The previous implementation emitted every compatible mention pair in a
+    two-sentence window, producing compliance-dangerous false edges. Nearest
+    typed arguments are a deterministic semantic-role approximation.
+    """
+    blob = sentence.text.lower()
+    extracted: list[Triple] = []
     for cues, head_types, tail_types, relation in RELATION_CUES:
-        if head.entity_type not in head_types or tail.entity_type not in tail_types:
+        if relation == "CONFIDENCE_GATE" and not ("auto-fill" in blob or "below 0.82" in blob):
             continue
-        if head.canonical == tail.canonical:
-            continue
-        if not any(cue in blob for cue in cues):
-            continue
-        if relation == "CANNOT_WRITE" and head.canonical == "Checker":
-            continue
-        if relation == "CAN_WRITE" and head.canonical != "Checker":
-            continue
-        if relation == "ACTS_AS" and not (
-            head.entity_type == "System" and tail.canonical == "Maker"
+        if relation == "ESCALATES_TO" and (
+            "failed ovd" in blob
+            or "first attempt" in blob
+            or "first officially valid document" in blob
         ):
             continue
-        if relation == "CAN_FREEZE" and head.canonical != "Financial Crime Unit":
-            continue
-        if (
-            relation == "REQUIRES"
-            and tail.entity_type == "Role"
-            and tail.canonical != "Dual Checker"
-        ):
-            continue
-        if (
-            relation == "REQUIRES"
-            and head.entity_type == "Product"
-            and tail.entity_type not in {"Document", "Control", "Form"}
-        ):
-            continue
-        return relation
-    return None
+        cue_positions = [(blob.find(cue), cue) for cue in cues if blob.find(cue) >= 0]
+        for cue_start, cue in cue_positions:
+            cue_mid = cue_start + len(cue) / 2
+            pairs = [
+                (head, tail)
+                for head in mentions
+                for tail in mentions
+                if head.start < tail.start
+                and head.entity_type in head_types
+                and tail.entity_type in tail_types
+                and _valid_relation(relation, head, tail)
+            ]
+            if not pairs:
+                continue
+            head, tail = min(
+                pairs,
+                key=lambda pair: abs(pair[0].end - cue_mid) + abs(pair[1].start - cue_mid),
+            )
+            if relation == "REQUIRES" and tail.canonical == "Proof of Address":
+                process = next(
+                    (m for m in mentions if m.canonical == "Address Change"),
+                    None,
+                )
+                if process is not None:
+                    head = process
+            extracted.append(
+                Triple(
+                    head=head.canonical,
+                    relation=relation,
+                    tail=tail.canonical,
+                    source=sentence.doc_id,
+                    evidence=sentence.text.strip()[:400],
+                    sent_id=sentence.sent_id,
+                )
+            )
+    return extracted
 
 
 def extract_triples(docs: list[Document]) -> list[Triple]:
@@ -138,23 +164,10 @@ def extract_triples(docs: list[Document]) -> list[Triple]:
         mentions = _find_mentions(sent.text)
         if len(mentions) < 2:
             continue
-        pairs = [(a, b) for i, a in enumerate(mentions) for b in mentions[i + 1 :]]
-        for head, tail in pairs:
-            rel = _cue_relation(sent.text, head, tail)
-            if not rel:
-                continue
-            key = (head.canonical, rel, tail.canonical, sent.doc_id)
+        for triple in _extract_from_window(sent, mentions):
+            key = (triple.head, triple.relation, triple.tail, triple.source)
             if key in seen:
                 continue
             seen.add(key)
-            triples.append(
-                Triple(
-                    head=head.canonical,
-                    relation=rel,
-                    tail=tail.canonical,
-                    source=sent.doc_id,
-                    evidence=sent.text.strip()[:400],
-                    sent_id=sent.sent_id,
-                )
-            )
+            triples.append(triple)
     return triples

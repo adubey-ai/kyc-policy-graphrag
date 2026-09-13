@@ -33,7 +33,7 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = [
-  "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+  "ignore::Warning:fastapi.testclient",
   "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 

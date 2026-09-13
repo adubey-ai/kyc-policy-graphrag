@@ -11,10 +11,10 @@ Inspired by [microsoft/graphrag](https://github.com/microsoft/graphrag) (local +
 | Ingestion | Recursive Markdown, text, and **PDF** loading with stable document provenance |
 | Extraction | Offline schema cues on paraphrases, or `KYC_EXTRACTION=openai` for constrained **JSON-Schema** model extraction |
 | Graph | Typed NetworkX multigraph, Louvain communities, evidence on every edge |
-| Retrieval | MiniLM/TF-IDF chunks + typed edges + community summaries, fused with **RRF** and 2-hop expansion |
+| Retrieval | MiniLM/TF-IDF chunks + typed edges + explicit 2-edge paths + community summaries, fused with **RRF** |
 | Persistence | Normalized **SQLite** snapshot (documents, chunks, nodes, edges, communities) plus FTS5 |
 | Serving | Typed FastAPI `/query`, `/health`, and `/graph/neighbors/{entity}` endpoints |
-| Evaluation | Held-out paraphrases, answer-key + must-cite scoring, MRR, recall@8, and latency |
+| Evaluation | Equal-k answer/citation/path scoring, extraction P/R/F1, MRR, recall@6, and latency |
 | Delivery | Installable package, CLI, Docker image, non-root runtime, healthcheck, and a GitHub Actions template |
 
 This is still intentionally smaller than Microsoft GraphRAG: it does not claim open-domain extraction or production scale. The included corpus is synthetic and the six-question benchmark is a regression suite, not statistical evidence of superiority.
@@ -25,14 +25,20 @@ This is still intentionally smaller than Microsoft GraphRAG: it does not claim o
 
 The question never says IASW or CBS. Chunk RAG typically returns “Maker cannot post.” The graph has to use `IASW Agent -ACTS_AS-> Maker` then `CANNOT_WRITE -> CBS`, including from the paraphrased Q3 circular (“field-extraction bot … classified as Maker … prohibited from updating core banking”).
 
-Held-out (`scripts/run_demo.py --sparse`):
+Equal-budget regression evaluation (`scripts/run_demo.py --sparse --k 6`):
 
-- task success: naive **5/6**, graph **6/6**
-- MRR: naive **0.833**, graph **0.889**
-- graph recall@8: **1.000**
-- mean retrieval latency on the included corpus: **0.13 ms** (hardware-dependent)
+- grounded answer success at k=6: chunk **5/6**, graph **6/6**
+- MRR: chunk **0.861**, graph **1.000**
+- graph recall@6: **0.944**
+- required path composition: **1/1**
+- hand-annotated extraction set (26 triples): precision/recall/F1 **1.00**, zero forbidden edges
+- mean sparse retrieval latency: chunk **0.16 ms**, graph **0.14 ms** (hardware-dependent)
 
-The miss for chunk RAG is the unnamed-entity hop. These six questions are a transparent regression set, not a statistically powered benchmark.
+Both systems receive exactly six results. Community names and joined source
+metadata are excluded from scoring; the generated answer must contain the
+answer atoms and cite the supporting span. The graph-only win is the required
+`ACTS_AS -> CANNOT_WRITE` composition. These six questions and 26 annotated
+triples are transparent regression sets, not statistically powered benchmarks.
 
 ## Pipeline
 
@@ -43,7 +49,7 @@ policies (PDF/Markdown/text)
   -> NetworkX property graph
   -> Louvain communities
   -> HybridIndex: chunk vectors + edge vectors + community vectors
-  -> RRF fusion, 2-hop seed expansion
+  -> RRF fusion, explicit 2-edge path composition
   -> cited answer
 ```
 
@@ -92,4 +98,4 @@ For model extraction, set `KYC_EXTRACTION=openai` and `OPENAI_API_KEY`. Model ou
 
 ## Resume line
 
-Built a production-shaped Graph RAG for KYC/AML policy with PDF ingestion, validated schema/model extraction, RRF hybrid retrieval across chunks/2-hop edges/Louvain communities, SQLite provenance, FastAPI, Docker, CI, and citation-aware evaluation.
+Built a production-shaped Graph RAG for KYC/AML policy with PDF ingestion, validated schema/model extraction, RRF hybrid retrieval across chunks/composed paths/Louvain communities, SQLite provenance, FastAPI, Docker, CI-ready delivery, and equal-k citation-aware evaluation.

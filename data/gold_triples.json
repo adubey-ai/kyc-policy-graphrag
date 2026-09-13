@@ -1,0 +1,37 @@
+{
+  "expected": [
+    ["address_change", "Address Change", "REQUIRES", "Proof of Address"],
+    ["address_change", "Maker", "CONFIDENCE_GATE", "CBS"],
+    ["address_change", "Checker", "CAN_WRITE", "CBS"],
+    ["address_change", "HRC-22", "ESCALATES_TO", "Financial Crime Unit"],
+    ["address_change", "Address Change", "REQUIRES", "EDD"],
+    ["aml_edd", "EDD", "REQUIRES", "SOF-Q1"],
+    ["aml_edd", "EDD", "REQUIRES_CHECKER_FROM", "Financial Crime Unit"],
+    ["aml_edd", "Financial Crime Unit", "CAN_FREEZE", "CBS"],
+    ["document_retention", "IASW Agent", "ACTS_AS", "Maker"],
+    ["document_retention", "Maker", "CANNOT_WRITE", "CBS"],
+    ["kyc_onboarding", "Savings Account", "REQUIRES", "OVD"],
+    ["kyc_onboarding", "Current Account", "REQUIRES", "GST Certificate"],
+    ["kyc_onboarding", "Maker", "CANNOT_WRITE", "CBS"],
+    ["kyc_onboarding", "Checker", "CAN_WRITE", "CBS"],
+    ["kyc_onboarding", "PEP", "REQUIRES", "EDD"],
+    ["kyc_onboarding", "OVD", "ON_FAILURE_ROUTES_TO", "Central KYC Desk"],
+    ["ops_circular_q3", "IASW Agent", "ACTS_AS", "Maker"],
+    ["ops_circular_q3", "Maker", "CANNOT_WRITE", "CBS"],
+    ["ops_circular_q3", "OVD", "ON_FAILURE_ROUTES_TO", "Central KYC Desk"],
+    ["pep_screening_sop", "Address Change", "REQUIRES", "EDD"],
+    ["pep_screening_sop", "HRC-22", "REQUIRES", "EDD"],
+    ["pep_screening_sop", "Financial Crime Unit", "CAN_FREEZE", "CBS"],
+    ["pep_screening_sop", "Current Account", "REQUIRES", "GST Certificate"],
+    ["scanned_address_policy", "Address Change", "REQUIRES", "Proof of Address"],
+    ["scanned_address_policy", "Address Change", "ACCEPTS", "Proof of Address"],
+    ["scanned_address_policy", "HRC-22", "ESCALATES_TO", "Financial Crime Unit"]
+  ],
+  "forbidden": [
+    ["document_retention", "Maker", "CONFIDENCE_GATE", "CBS"],
+    ["document_retention", "OVD", "RETAINED_YEARS", "10"],
+    ["kyc_onboarding", "Checker", "REQUIRES", "EDD"],
+    ["ops_circular_q3", "OVD", "ESCALATES_TO", "Central KYC Desk"],
+    ["pep_screening_sop", "Dual Checker", "REQUIRES", "GST Certificate"]
+  ]
+}

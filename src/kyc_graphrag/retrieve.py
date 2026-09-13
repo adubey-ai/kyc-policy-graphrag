@@ -58,8 +58,8 @@ class HybridIndex:
         self.communities = communities
         self.embedder = embedder
         corpus = [c["text"] for c in chunks]
-        corpus += [c.summary for c in communities]
-        corpus += [f"{u} {d['relation']} {v} {d['evidence']}" for u, v, d in graph.edges(data=True)]
+        # Fit sparse IDF only on baseline chunks. Fitting on graph/community
+        # strings leaks graph information into the chunk-only baseline.
         embedder.fit(corpus)
         self.chunk_mat = (
             embedder.encode([c["text"] for c in chunks]) if chunks else np.zeros((0, 1))
@@ -84,6 +84,48 @@ class HybridIndex:
             if self.edge_records
             else np.zeros((0, 1))
         )
+        self.path_records = self._build_paths()
+        self.path_mat = (
+            embedder.encode([r["text"] for r in self.path_records])
+            if self.path_records
+            else np.zeros((0, 1))
+        )
+
+    def _build_paths(self) -> list[dict[str, str]]:
+        """Compose directed two-edge paths with both evidence spans."""
+        paths: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for left_u, middle, left in self.graph.edges(data=True):
+            for _, right_v, right in self.graph.out_edges(middle, data=True):
+                if left_u == right_v:
+                    continue
+                key = (
+                    left_u,
+                    left["relation"],
+                    middle,
+                    right["relation"],
+                    right_v,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(
+                    {
+                        "key": "p:" + "|".join(key),
+                        "text": (
+                            f"{left_u} -[{left['relation']}]-> {middle} "
+                            f"-[{right['relation']}]-> {right_v}. "
+                            f"Evidence 1: {left['evidence']} "
+                            f"Evidence 2: {right['evidence']}"
+                        ),
+                        "source": f"{left['source']},{right['source']}",
+                        "sent_id": f"{left.get('sent_id', '')},{right.get('sent_id', '')}",
+                        "u": left_u,
+                        "middle": middle,
+                        "v": right_v,
+                    }
+                )
+        return paths
 
     def naive(self, query: str, k: int = 4) -> list[Hit]:
         qv = self.embedder.encode([query])[0]
@@ -128,17 +170,39 @@ class HybridIndex:
             scored_edges.sort(reverse=True)
             edge_rank = [self.edge_records[i]["key"] for _, i in scored_edges[:12]]
 
+        path_rank: list[str] = []
+        if self.path_mat.size:
+            dense = self.path_mat @ qv
+            scored_paths = []
+            for i, record in enumerate(self.path_records):
+                seed_bonus = (
+                    1.0
+                    if seed_set.intersection({record["u"], record["middle"], record["v"]})
+                    else 0.0
+                )
+                scored_paths.append((float(dense[i]) + seed_bonus, i))
+            scored_paths.sort(reverse=True)
+            # Cap path candidates so compositional evidence cannot crowd out
+            # direct lexical facts (for example, Current Account -> GST).
+            path_rank = [self.path_records[i]["key"] for _, i in scored_paths[:3]]
+
         comm_rank = [
             f"c:{self.communities[i].community_id}" for i, _ in cosine_topk(qv, self.comm_mat, 4)
         ]
 
-        # Edge evidence is the differentiating Graph RAG signal. Chunks retain
-        # recall; broad community summaries are supporting context.
-        fused = _rrf([(chunk_rank, 0.7), (edge_rank, 1.3), (comm_rank, 0.5)])
+        fused = _rrf(
+            [
+                (chunk_rank, 1.0),
+                (edge_rank, 1.1),
+                (path_rank, 1.2),
+                (comm_rank, 0.35),
+            ]
+        )
         ordered = sorted(fused.items(), key=lambda x: -x[1])[:k]
 
         by_chunk = {c["chunk_id"]: c for c in self.chunks}
         by_edge = {r["key"]: r for r in self.edge_records}
+        by_path = {r["key"]: r for r in self.path_records}
         by_comm = {f"c:{c.community_id}": c for c in self.communities}
 
         hits: list[Hit] = []
@@ -162,14 +226,27 @@ class HybridIndex:
                         },
                     )
                 )
+            elif key in by_path:
+                record = by_path[key]
+                hits.append(
+                    Hit(
+                        "path",
+                        score,
+                        record["text"],
+                        {
+                            "doc_id": record["source"],
+                            "sent_id": record["sent_id"],
+                        },
+                    )
+                )
             elif key in by_comm:
                 comm = by_comm[key]
                 hits.append(
                     Hit(
                         "community",
                         score,
-                        f"Community {comm.community_id} ({', '.join(comm.members)}): {comm.summary}",
-                        {"doc_id": ",".join(comm.source_docs)},
+                        f"Community summary {comm.community_id}: {comm.summary}",
+                        {},
                     )
                 )
         return hits

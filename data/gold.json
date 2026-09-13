@@ -2,9 +2,10 @@
   {
     "id": "iasw_no_cbs",
     "question": "Does maker-equivalent automation get posting rights on the ledger?",
-    "answer_key": ["iasw"],
+    "answer_key": ["maker", "cbs"],
     "must_cite_any": ["ops_circular_q3", "document_retention"],
     "hop": true,
+    "required_path": ["ACTS_AS", "CANNOT_WRITE"],
     "why_graph": "Question names neither IASW nor CBS. Chunk RAG usually returns 'Maker cannot post'. Graph must use ACTS_AS then CANNOT_WRITE."
   },
   {
