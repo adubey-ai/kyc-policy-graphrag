@@ -1,14 +1,17 @@
-"""Schema-guided entity and relation extraction for KYC policy Graph RAG.
+"""Schema-guided mention + relation extraction.
 
-The extractor is deterministic so the demo runs without an LLM API. Optional
-LLM extraction can be layered later; the graph schema stays the same.
+Mentions come from a gazetteer (aliases). Relations fire when two typed
+mentions co-occur in a sentence *and* a relation cue is present. Adding a
+paraphrased circular should extract the same edge without a new fact regex.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
+
+from kyc_graphrag.corpus import Document, Sentence, sentences
+from kyc_graphrag.schema import RELATION_CUES, alias_table
 
 
 @dataclass(frozen=True)
@@ -18,126 +21,139 @@ class Triple:
     tail: str
     source: str
     evidence: str
+    sent_id: str
 
 
-@dataclass
-class Document:
-    doc_id: str
-    title: str
-    text: str
-    path: str
+@dataclass(frozen=True)
+class Mention:
+    start: int
+    end: int
+    canonical: str
+    entity_type: str
 
 
-# (pattern, head, relation, tail) — first match wins per rule, per document.
-RULES: list[tuple[str, str, str, str]] = [
-    (r"Maker cannot post the account to the Core Banking System \(CBS\)",
-     "Maker", "CANNOT_WRITE", "CBS"),
-    (r"Only the Checker role can approve the KYC packet and trigger the CBS write",
-     "Checker", "CAN_WRITE", "CBS"),
-    (r"Checker is the only role with write access to the CBS customer-master address",
-     "Checker", "CAN_WRITE", "CBS"),
-    (r"neither Maker nor branch Checker can write KYC or address changes",
-     "Financial Crime Unit", "CAN_FREEZE", "CBS"),
-    (r"Politically Exposed Person \(PEP\), Enhanced Due Diligence \(EDD\) is mandatory",
-     "PEP", "REQUIRES", "EDD"),
-    (r"PEP customer requesting an address change also triggers EDD",
-     "Address Change", "REQUIRES", "EDD"),
-    (r"high-risk pin codes in list HRC-22",
-     "HRC-22", "REQUIRES", "EDD"),
-    (r"If the new address is in a high-risk pin code list HRC-22",
-     "Address Change", "ESCALATES_TO", "Financial Crime Unit"),
-    (r"one of the two Checkers must be from the Financial Crime Unit",
-     "EDD", "REQUIRES_CHECKER_FROM", "Financial Crime Unit"),
-    (r"Failed OVD verification on the first attempt must be routed to the Central KYC Desk",
-     "OVD", "ON_FAILURE_ROUTES_TO", "Central KYC Desk"),
-    (r"savings account requires Officially Valid Document \(OVD\)",
-     "Savings Account", "REQUIRES", "OVD"),
-    (r"current account additionally requires a GST certificate",
-     "Current Account", "REQUIRES", "GST Certificate"),
-    (r"Utility bill, Passport, and Aadhaar e-KYC are accepted",
-     "Address Change", "ACCEPTS", "Proof of Address"),
-    (r"confidence below 0.82 cannot auto-fill the CBS address block",
-     "Maker", "CONFIDENCE_GATE", "CBS"),
-    (r"IASW-style agentic pipelines that auto-extract fields are treated as Maker actions",
-     "IASW Agent", "ACTS_AS", "Maker"),
-    (r"They inherit Maker restrictions: no CBS write path",
-     "IASW Agent", "CANNOT_WRITE", "CBS"),
-    (r"Retention is 8 years after account closure for OVD images",
-     "OVD", "RETAINED_YEARS", "8"),
-    (r"10 years for EDD files",
-     "EDD", "RETAINED_YEARS", "10"),
-    (r"Policy ID: POL-KYC-001",
-     "POL-KYC-001", "GOVERNS", "Savings Account"),
-    (r"Policy ID: POL-KYC-001",
-     "POL-KYC-001", "GOVERNS", "Current Account"),
-    (r"Policy ID: POL-CHG-014",
-     "POL-CHG-014", "GOVERNS", "Address Change"),
-    (r"Policy ID: POL-AML-007",
-     "POL-AML-007", "GOVERNS", "EDD"),
-    (r"Policy ID: POL-AUD-003",
-     "POL-AUD-003", "GOVERNS", "OVD"),
-    (r"dual Checker sign-off",
-     "EDD", "REQUIRES", "Dual Checker"),
-    (r"form SOF-Q1",
-     "EDD", "REQUIRES", "SOF-Q1"),
-]
+_ALIASES = alias_table()
+_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+./-]*")
 
 
-ENTITY_TYPES = {
-    "Maker": "Role",
-    "Checker": "Role",
-    "Dual Checker": "Role",
-    "IASW Agent": "System",
-    "CBS": "System",
-    "Financial Crime Unit": "Unit",
-    "Central KYC Desk": "Unit",
-    "PEP": "CustomerType",
-    "EDD": "Control",
-    "OVD": "Document",
-    "GST Certificate": "Document",
-    "Proof of Address": "Document",
-    "Savings Account": "Product",
-    "Current Account": "Product",
-    "Address Change": "Process",
-    "HRC-22": "RiskList",
-    "SOF-Q1": "Form",
-    "POL-KYC-001": "Policy",
-    "POL-CHG-014": "Policy",
-    "POL-AML-007": "Policy",
-    "POL-AUD-003": "Policy",
-    "8": "Duration",
-    "10": "Duration",
-}
+def _find_mentions(text: str) -> list[Mention]:
+    lower = text.lower()
+    taken = [False] * len(lower)
+    found: list[Mention] = []
+    for alias, canonical, entity_type in _ALIASES:
+        start = 0
+        while True:
+            i = lower.find(alias, start)
+            if i < 0:
+                break
+            j = i + len(alias)
+            if not any(taken[i:j]) and _boundary(lower, i, j):
+                for k in range(i, j):
+                    taken[k] = True
+                found.append(Mention(i, j, canonical, entity_type))
+            start = i + 1
+    found.sort(key=lambda m: (m.start, -(m.end - m.start)))
+    return found
 
 
-def load_documents(policy_dir: Path) -> list[Document]:
-    docs: list[Document] = []
-    for path in sorted(policy_dir.glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        title = text.splitlines()[0].lstrip("# ").strip() if text else path.stem
-        docs.append(Document(doc_id=path.stem, title=title, text=text, path=str(path)))
-    return docs
+def _boundary(text: str, i: int, j: int) -> bool:
+    left_ok = i == 0 or not text[i - 1].isalnum()
+    right_ok = j == len(text) or not text[j].isalnum()
+    return left_ok and right_ok
+
+
+DIRECTED = frozenset(
+    {
+        "CANNOT_WRITE",
+        "CAN_WRITE",
+        "CAN_FREEZE",
+        "ACTS_AS",
+        "ESCALATES_TO",
+        "ON_FAILURE_ROUTES_TO",
+        "REQUIRES_CHECKER_FROM",
+        "CONFIDENCE_GATE",
+        "GOVERNS",
+        "RETAINED_YEARS",
+        "ACCEPTS",
+    }
+)
+
+
+def _cue_relation(sentence: str, head: Mention, tail: Mention) -> str | None:
+    blob = sentence.lower()
+    for cues, head_types, tail_types, relation in RELATION_CUES:
+        if head.entity_type not in head_types or tail.entity_type not in tail_types:
+            continue
+        if head.canonical == tail.canonical:
+            continue
+        if not any(cue in blob for cue in cues):
+            continue
+        if relation == "CANNOT_WRITE" and head.canonical == "Checker":
+            continue
+        if relation == "CAN_WRITE" and head.canonical != "Checker":
+            continue
+        if relation == "ACTS_AS" and not (
+            head.entity_type == "System" and tail.canonical == "Maker"
+        ):
+            continue
+        if relation == "CAN_FREEZE" and head.canonical != "Financial Crime Unit":
+            continue
+        if relation == "REQUIRES" and tail.entity_type == "Role" and tail.canonical != "Dual Checker":
+            continue
+        if relation == "REQUIRES" and head.entity_type == "Product" and tail.entity_type not in {"Document", "Control", "Form"}:
+            continue
+        return relation
+    return None
 
 
 def extract_triples(docs: list[Document]) -> list[Triple]:
     triples: list[Triple] = []
     seen: set[tuple[str, str, str, str]] = set()
-    for doc in docs:
-        for pattern, head, relation, tail in RULES:
-            match = re.search(pattern, doc.text)
-            if not match:
-                continue
-            key = (head, relation, tail, doc.doc_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            triples.append(
-                Triple(
-                    head=head,
-                    relation=relation,
-                    tail=tail,
-                    source=doc.doc_id,
-                    evidence=match.group(0),
+    sents = sentences(docs)
+    windows: list[Sentence] = []
+    # Pair adjacent sentences in the same doc so "It is prohibited..." still
+    # binds to the IASW mention in the previous sentence.
+    i = 0
+    while i < len(sents):
+        cur = sents[i]
+        if i + 1 < len(sents) and sents[i + 1].doc_id == cur.doc_id:
+            windows.append(
+                Sentence(
+                    sent_id=cur.sent_id,
+                    doc_id=cur.doc_id,
+                    text=cur.text + " " + sents[i + 1].text,
                 )
             )
+        windows.append(cur)
+        i += 1
+    for sent in windows:
+        mentions = _find_mentions(sent.text)
+        if len(mentions) < 2:
+            continue
+        pairs = [(a, b) for i, a in enumerate(mentions) for b in mentions[i + 1 :]]
+        for head, tail in pairs:
+            candidates = ((head, tail), (tail, head))
+            for h, t in candidates:
+                rel = _cue_relation(sent.text, h, t)
+                if not rel:
+                    continue
+                if rel in DIRECTED and h.start > t.start and rel != "ACTS_AS":
+                    # Keep directed edges in mention order except ACTS_AS,
+                    # which is typed System -> Maker regardless of order.
+                    if rel != "ACTS_AS":
+                        pass
+                key = (h.canonical, rel, t.canonical, sent.doc_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                triples.append(
+                    Triple(
+                        head=h.canonical,
+                        relation=rel,
+                        tail=t.canonical,
+                        source=sent.doc_id,
+                        evidence=sent.text.strip()[:400],
+                        sent_id=sent.sent_id,
+                    )
+                )
     return triples

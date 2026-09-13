@@ -1,45 +1,19 @@
-"""Naive lexical RAG vs Graph RAG retrieval."""
+"""Hybrid retrieval: dense/sparse chunks + entity linking + 2-hop graph + communities.
+
+Fusion is Reciprocal Rank Fusion so neither channel has to share a score scale.
+"""
 
 from __future__ import annotations
 
-import math
-import re
-from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import networkx as nx
+import numpy as np
 
 from kyc_graphrag.communities import Community
-from kyc_graphrag.extract import ENTITY_TYPES
-
-
-TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+.-]*")
-
-
-def tokenize(text: str) -> list[str]:
-    return [t.lower() for t in TOKEN.findall(text)]
-
-
-def _tfidf_scores(query: str, corpus: list[str]) -> list[float]:
-    q = tokenize(query)
-    docs = [tokenize(c) for c in corpus]
-    df: Counter[str] = Counter()
-    for doc in docs:
-        df.update(set(doc))
-    n = max(len(docs), 1)
-    idf = {t: math.log((n + 1) / (df[t] + 1)) + 1.0 for t in set(q)}
-    scores: list[float] = []
-    q_counts = Counter(q)
-    for doc in docs:
-        d_counts = Counter(doc)
-        score = 0.0
-        for term, qtf in q_counts.items():
-            if term not in d_counts:
-                continue
-            tf = d_counts[term] / max(len(doc), 1)
-            score += qtf * tf * idf.get(term, 0.0)
-        scores.append(score)
-    return scores
+from kyc_graphrag.embed import Embedder, cosine_topk
+from kyc_graphrag.retrieve_text import tokenize
+from kyc_graphrag.schema import alias_table
 
 
 @dataclass
@@ -47,122 +21,148 @@ class Hit:
     kind: str
     score: float
     text: str
-    meta: dict[str, str]
+    meta: dict[str, str] = field(default_factory=dict)
+    rank: int = 0
 
 
-def naive_retrieve(query: str, chunks: list[dict[str, str]], k: int = 3) -> list[Hit]:
-    scores = _tfidf_scores(query, [c["text"] for c in chunks])
-    ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
-    hits: list[Hit] = []
-    for score, chunk in ranked[:k]:
-        if score <= 0:
-            continue
-        hits.append(
-            Hit(
-                kind="chunk",
-                score=score,
-                text=chunk["text"],
-                meta={"chunk_id": chunk["chunk_id"], "doc_id": chunk["doc_id"]},
-            )
-        )
-    return hits
+def _rrf(rank_lists: list[list[str]], k: int = 60) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for ranked in rank_lists:
+        for i, key in enumerate(ranked):
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + i + 1)
+    return scores
 
 
-def _match_entities(query: str, graph: nx.MultiDiGraph) -> list[str]:
+def _link_entities(query: str, graph: nx.MultiDiGraph) -> list[str]:
     q = query.lower()
     hits: list[tuple[int, str]] = []
-    for node in graph.nodes:
-        aliases = {node.lower(), ENTITY_TYPES.get(node, "").lower()}
-        if any(alias and alias in q for alias in aliases if alias):
-            hits.append((len(node), node))
-        else:
-            tokens = tokenize(node)
-            if tokens and all(t in tokenize(query) for t in tokens):
-                hits.append((len(node), node))
-    # Prefer longer names (Politically Exposed vs PEP handled via aliases below)
-    extra = []
-    alias_map = {
-        "pep": "PEP",
-        "cbs": "CBS",
-        "maker": "Maker",
-        "checker": "Checker",
-        "edd": "EDD",
-        "ovd": "OVD",
-        "iasw": "IASW Agent",
-        "address": "Address Change",
-        "current": "Current Account",
-        "savings": "Savings Account",
-        "freeze": "Financial Crime Unit",
-        "hrc-22": "HRC-22",
-        "hrc22": "HRC-22",
-    }
-    q_tokens = set(tokenize(query))
-    for token, node in alias_map.items():
-        if token in q_tokens or token in q:
-            extra.append(node)
-    ordered = [n for _, n in sorted(hits, reverse=True)]
-    for n in extra:
-        if n not in ordered:
-            ordered.append(n)
-    return ordered
+    for alias, canonical, _ in alias_table():
+        if alias in q and canonical in graph:
+            hits.append((len(alias), canonical))
+    seen: list[str] = []
+    for _, name in sorted(hits, reverse=True):
+        if name not in seen:
+            seen.append(name)
+    return seen
 
 
-def graph_retrieve(
-    query: str,
-    graph: nx.MultiDiGraph,
-    communities: list[Community],
-    hops: int = 2,
-    k_local: int = 8,
-    k_global: int = 2,
-) -> list[Hit]:
-    seeds = _match_entities(query, graph)
-    q_tokens = set(tokenize(query))
-    hits: list[Hit] = []
-
-    # Local: ego neighbourhood of matched entities (Microsoft "local search").
-    seen_edges: set[tuple[str, str, str]] = set()
-    for seed in seeds:
-        if seed not in graph:
-            continue
-        ego = nx.ego_graph(graph.to_undirected(), seed, radius=hops)
-        for u, v, data in graph.edges(data=True):
-            if u not in ego or v not in ego:
-                continue
-            key = (u, data["relation"], v)
-            if key in seen_edges:
-                continue
-            seen_edges.add(key)
-            blob = tokenize(f"{u} {data['relation']} {v} {data['evidence']}")
-            overlap = len(q_tokens.intersection(blob))
-            seed_bonus = 2.0 if seed in (u, v) else 1.0
-            hits.append(
-                Hit(
-                    kind="triple",
-                    score=seed_bonus + 0.4 * overlap,
-                    text=f"{u} -[{data['relation']}]-> {v}. Evidence: {data['evidence']}",
-                    meta={"source": data["source"], "seed": seed},
-                )
-            )
-
-    # Global: community summaries that overlap the query or the seed set.
-    seed_set = set(seeds)
-    comm_scores = []
-    for comm in communities:
-        overlap = len(seed_set.intersection(comm.members))
-        lexical = _tfidf_scores(query, [comm.summary + " " + " ".join(comm.members)])[0]
-        comm_scores.append((overlap * 2 + lexical, comm))
-    comm_scores.sort(key=lambda x: x[0], reverse=True)
-    for score, comm in comm_scores[:k_global]:
-        if score <= 0:
-            continue
-        hits.append(
-            Hit(
-                kind="community",
-                score=score,
-                text=f"Community {comm.community_id} ({', '.join(comm.members)}): {comm.summary}",
-                meta={"community_id": str(comm.community_id)},
-            )
+class HybridIndex:
+    def __init__(
+        self,
+        chunks: list[dict[str, str]],
+        graph: nx.MultiDiGraph,
+        communities: list[Community],
+        embedder: Embedder,
+    ) -> None:
+        self.chunks = chunks
+        self.graph = graph
+        self.communities = communities
+        self.embedder = embedder
+        corpus = [c["text"] for c in chunks]
+        corpus += [c.summary for c in communities]
+        corpus += [f"{u} {d['relation']} {v} {d['evidence']}" for u, v, d in graph.edges(data=True)]
+        embedder.fit(corpus)
+        self.chunk_mat = embedder.encode([c["text"] for c in chunks]) if chunks else np.zeros((0, 1))
+        self.comm_mat = (
+            embedder.encode([c.summary for c in communities]) if communities else np.zeros((0, 1))
+        )
+        self.edge_records = [
+            {
+                "key": f"e:{u}|{d['relation']}|{v}|{d['source']}",
+                "text": f"{u} -[{d['relation']}]-> {v}. {d['evidence']}",
+                "u": u,
+                "v": v,
+                "relation": d["relation"],
+                "source": d["source"],
+                "sent_id": d.get("sent_id", ""),
+            }
+            for u, v, d in graph.edges(data=True)
+        ]
+        self.edge_mat = (
+            embedder.encode([r["text"] for r in self.edge_records])
+            if self.edge_records
+            else np.zeros((0, 1))
         )
 
-    hits.sort(key=lambda h: h.score, reverse=True)
-    return hits[: k_local + k_global]
+    def naive(self, query: str, k: int = 4) -> list[Hit]:
+        qv = self.embedder.encode([query])[0]
+        hits = []
+        for idx, score in cosine_topk(qv, self.chunk_mat, k):
+            chunk = self.chunks[idx]
+            hits.append(
+                Hit(
+                    kind="chunk",
+                    score=score,
+                    text=chunk["text"],
+                    meta={"doc_id": chunk["doc_id"], "chunk_id": chunk["chunk_id"]},
+                )
+            )
+        return hits
+
+    def search(self, query: str, k: int = 8) -> list[Hit]:
+        qv = self.embedder.encode([query])[0]
+        seeds = _link_entities(query, self.graph)
+
+        chunk_rank = [self.chunks[i]["chunk_id"] for i, _ in cosine_topk(qv, self.chunk_mat, 8)]
+        edge_rank: list[str] = []
+        # Prefer edges touching linked entities, then dense score.
+        seed_set = set(seeds)
+        scored_edges: list[tuple[float, int]] = []
+        if self.edge_mat.size:
+            dense = self.edge_mat @ qv
+            for i, rec in enumerate(self.edge_records):
+                bonus = 1.5 if rec["u"] in seed_set or rec["v"] in seed_set else 0.0
+                hop_bonus = 0.0
+                if seeds:
+                    nbrs: set[str] = set()
+                    for s in seeds:
+                        if s not in self.graph:
+                            continue
+                        nbrs.add(s)
+                        nbrs.update(self.graph.successors(s))
+                        nbrs.update(self.graph.predecessors(s))
+                    if rec["u"] in nbrs or rec["v"] in nbrs:
+                        hop_bonus = 1.0 if rec["u"] in seed_set or rec["v"] in seed_set else 0.55
+                scored_edges.append((float(dense[i]) + bonus + hop_bonus, i))
+            scored_edges.sort(reverse=True)
+            edge_rank = [self.edge_records[i]["key"] for _, i in scored_edges[:12]]
+
+        comm_rank = [f"c:{self.communities[i].community_id}" for i, _ in cosine_topk(qv, self.comm_mat, 4)]
+
+        fused = _rrf([chunk_rank, edge_rank, comm_rank])
+        ordered = sorted(fused.items(), key=lambda x: -x[1])[:k]
+
+        by_chunk = {c["chunk_id"]: c for c in self.chunks}
+        by_edge = {r["key"]: r for r in self.edge_records}
+        by_comm = {f"c:{c.community_id}": c for c in self.communities}
+
+        hits: list[Hit] = []
+        for key, score in ordered:
+            if key in by_chunk:
+                ch = by_chunk[key]
+                hits.append(Hit("chunk", score, ch["text"], {"doc_id": ch["doc_id"], "chunk_id": key}))
+            elif key in by_edge:
+                rec = by_edge[key]
+                hits.append(
+                    Hit(
+                        "triple",
+                        score,
+                        rec["text"],
+                        {
+                            "doc_id": rec["source"],
+                            "sent_id": rec["sent_id"],
+                            "relation": rec["relation"],
+                        },
+                    )
+                )
+            elif key in by_comm:
+                comm = by_comm[key]
+                hits.append(
+                    Hit(
+                        "community",
+                        score,
+                        f"Community {comm.community_id} ({', '.join(comm.members)}): {comm.summary}",
+                        {"doc_id": ",".join(comm.source_docs)},
+                    )
+                )
+        return hits

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "iasw_no_cbs",
+    "question": "Does maker-equivalent automation get posting rights on the ledger?",
+    "answer_key": ["iasw"],
+    "must_cite_any": ["ops_circular_q3", "document_retention"],
+    "hop": true,
+    "why_graph": "Question names neither IASW nor CBS. Chunk RAG usually returns 'Maker cannot post'. Graph must use ACTS_AS then CANNOT_WRITE."
+  },
+  {
+    "id": "pep_address_edd",
+    "question": "Which extra control fires when a politically exposed customer files a pin-code change?",
+    "answer_key": ["edd"],
+    "must_cite_any": ["pep_screening_sop", "address_change", "aml_edd"],
+    "hop": true,
+    "why_graph": "Needs PEP and address-change jointly; ordinary KYC chunks do not name EDD."
+  },
+  {
+    "id": "freeze_who",
+    "question": "Which unit can halt customer-master posting while enhanced due diligence is still open?",
+    "answer_key": ["financial crime"],
+    "must_cite_any": ["pep_screening_sop", "aml_edd"],
+    "hop": true,
+    "why_graph": "Freeze authority is not in the address-change SOP title the question sounds like."
+  },
+  {
+    "id": "ovd_fail_desk",
+    "question": "After a single failed identity-document check, which desk owns the retry?",
+    "answer_key": ["central kyc"],
+    "must_cite_any": ["ops_circular_q3", "kyc_onboarding"],
+    "hop": false,
+    "why_graph": "Paraphrase: identity-document vs OVD."
+  },
+  {
+    "id": "current_gst",
+    "question": "Does a registered business current account still need a GST certificate?",
+    "answer_key": ["gst"],
+    "must_cite_any": ["pep_screening_sop", "kyc_onboarding"],
+    "hop": false,
+    "why_graph": "Lexical; chunk RAG is expected to hit this."
+  },
+  {
+    "id": "hrc22_escalate",
+    "question": "If the new pin is on HRC-22, who reviews the address-change case before approval?",
+    "answer_key": ["financial crime"],
+    "must_cite_any": ["scanned_address_policy", "address_change"],
+    "hop": false,
+    "why_graph": "OCR scan plus the clean policy."
+  }
+]

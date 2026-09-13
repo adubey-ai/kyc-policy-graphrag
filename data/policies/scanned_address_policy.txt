@@ -1,0 +1,7 @@
+SCANNED COPY -- low contrast
+
+address update on savings / current: customer must submit proof of address. utility bill / passport / aadhaar accepted if bill date < 90d.
+
+extracted fields below 0.82 confidence cannot auto-fill CBS address block.
+
+if new address in high-risk pin HRC-22 escalate to financial crime unit before checker approval.

@@ -1,18 +1,10 @@
-"""Community detection and extractive community summaries.
-
-Microsoft GraphRAG uses Leiden communities plus LLM summaries. This demo uses
-greedy modularity (no extra C deps) and concatenates evidence strings so the
-pipeline stays offline.
-"""
+"""Louvain communities and extractive summaries."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import networkx as nx
-from networkx.algorithms.community import greedy_modularity_communities
-
-from kyc_graphrag.extract import Document
 
 
 @dataclass
@@ -39,8 +31,12 @@ def detect_communities(graph: nx.MultiDiGraph) -> list[Community]:
                 evidence=[data["evidence"]],
                 sources={data["source"]},
             )
-
-    raw = greedy_modularity_communities(undirected, weight="weight")
+    if undirected.number_of_edges() == 0:
+        return []
+    try:
+        raw = nx.community.louvain_communities(undirected, weight="weight", seed=7)
+    except Exception:
+        raw = nx.community.greedy_modularity_communities(undirected, weight="weight")
     communities: list[Community] = []
     for idx, members in enumerate(raw):
         member_list = sorted(members)
@@ -50,7 +46,9 @@ def detect_communities(graph: nx.MultiDiGraph) -> list[Community]:
             if u in members and v in members:
                 evidence.extend(data["evidence"])
                 sources.update(data["sources"])
-        summary = " ".join(dict.fromkeys(evidence)) or ", ".join(member_list)
+        # Keep the most unique evidence snippets, not a wall of text.
+        uniq = list(dict.fromkeys(evidence))[:6]
+        summary = " ".join(uniq) or ", ".join(member_list)
         communities.append(
             Community(
                 community_id=idx,
@@ -60,21 +58,3 @@ def detect_communities(graph: nx.MultiDiGraph) -> list[Community]:
             )
         )
     return communities
-
-
-def chunk_documents(docs: list[Document], max_chars: int = 420) -> list[dict[str, str]]:
-    chunks: list[dict[str, str]] = []
-    for doc in docs:
-        paragraphs = [p.strip() for p in doc.text.split("\n\n") if p.strip()]
-        buf = ""
-        part = 0
-        for para in paragraphs:
-            if buf and len(buf) + len(para) > max_chars:
-                chunks.append({"chunk_id": f"{doc.doc_id}:{part}", "doc_id": doc.doc_id, "text": buf})
-                part += 1
-                buf = para
-            else:
-                buf = f"{buf}\n\n{para}".strip()
-        if buf:
-            chunks.append({"chunk_id": f"{doc.doc_id}:{part}", "doc_id": doc.doc_id, "text": buf})
-    return chunks

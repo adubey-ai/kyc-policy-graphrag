@@ -1,4 +1,4 @@
-"""Property graph over KYC policy triples."""
+"""Property graph over extracted triples."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ from typing import Any
 
 import networkx as nx
 
-from kyc_graphrag.extract import ENTITY_TYPES, Triple
+from kyc_graphrag.extract import Triple
+from kyc_graphrag.schema import ENTITIES
+
+ENTITY_TYPES = {e.canonical: e.entity_type for e in ENTITIES}
 
 
 def build_graph(triples: list[Triple]) -> nx.MultiDiGraph:
@@ -26,6 +29,7 @@ def build_graph(triples: list[Triple]) -> nx.MultiDiGraph:
             relation=triple.relation,
             source=triple.source,
             evidence=triple.evidence,
+            sent_id=getattr(triple, "sent_id", ""),
         )
     return graph
 
@@ -55,6 +59,7 @@ def export_graph(graph: nx.MultiDiGraph) -> dict[str, Any]:
                 "relation": d["relation"],
                 "doc": d["source"],
                 "evidence": d["evidence"],
+                "sent_id": d.get("sent_id", ""),
             }
             for u, v, d in graph.edges(data=True)
         ],
